@@ -1,0 +1,598 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+///////////////////////
+// Enums
+///////////////////////
+enum Role {
+  ADMIN
+  PROJECT_MANAGER
+  TEAM_MEMBER
+  SALES
+  FINANCE
+}
+
+enum ProjectStatus {
+  PLANNED
+  IN_PROGRESS
+  ON_HOLD
+  COMPLETED
+  CANCELLED
+}
+
+enum TaskStatus {
+  NEW
+  IN_PROGRESS
+  BLOCKED
+  DONE
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum DocumentStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  CONFIRMED
+  CANCELLED
+  PAID
+  PARTIAL
+  SENT
+  DONE
+}
+
+enum PartnerType {
+  CUSTOMER
+  VENDOR
+  BOTH
+}
+
+///////////////////////
+// Core user & partner
+///////////////////////
+model User {
+  id         String    @id @default(uuid())
+  email      String    @unique
+  name       String?
+  role       Role?     // Nullable - new OAuth users won't have a role until they select one
+  password   String?
+  emailVerified DateTime?
+  image      String?
+  isApproved Boolean   @default(false)  // Admin approval required
+  approvedAt DateTime?
+  approvedBy String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  hourlyRate Decimal?  @db.Decimal(12,2)
+  avatarUrl  String?
+
+  membership      ProjectMember[]
+  assignedTasks   Task[]          @relation("Assignee")
+  timesheets      Timesheet[]
+  comments        TaskComment[]
+  expenses        Expense[]       @relation("CreatedBy")
+  attachments     Attachment[]
+  accounts        Account[]
+  sessions        Session[]
+  
+  // Sales Order approval workflow
+  requestedSalesOrders SalesOrder[] @relation("SalesOrderRequester")
+  approvedSalesOrders  SalesOrder[] @relation("SalesOrderApprover")
+  
+  // Purchase Order approval workflow
+  requestedPurchaseOrders PurchaseOrder[] @relation("PORequestedBy")
+  approvedPurchaseOrders  PurchaseOrder[] @relation("POApprovedBy")
+  purchaseOrderActivities PurchaseOrderActivity[]
+
+  managedProjects ProjectManager[]
+  projectsManaged Project[] @relation("ProjectManager")
+}
+
+model Partner {
+  id          String      @id @default(uuid())
+  name        String
+  type        PartnerType @default(CUSTOMER)
+  contactName String?
+  email       String?
+  phone       String?
+  address     String?
+  createdAt   DateTime    @default(now())
+
+  salesOrders     SalesOrder[]
+  purchaseOrders  PurchaseOrder[]
+  customerInvoices CustomerInvoice[]
+  vendorBills     VendorBill[]
+  payments        Payment[]
+  expenses        Expense[]
+}
+
+///////////////////////
+// Projects + membership
+///////////////////////
+model Project {
+  id            String         @id @default(uuid())
+  name          String
+  code          String?
+  description   String?
+  managerId     String?
+  manager       User?          @relation("ProjectManager", fields: [managerId], references: [id], onDelete: SetNull)
+  status        ProjectStatus  @default(PLANNED)
+  startDate     DateTime?
+  endDate       DateTime?
+  budget        Decimal?       @db.Decimal(12,2)
+  totalRevenue  Decimal?       @db.Decimal(12,2) @default(0.00)
+  totalCost     Decimal?       @db.Decimal(12,2) @default(0.00)
+  progressPct   Int?           @default(0)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  managers      ProjectManager[]
+  members       ProjectMember[]
+  tasks         Task[]
+  salesOrders   SalesOrder[]
+  purchaseOrders PurchaseOrder[]
+  customerInvoices CustomerInvoice[]
+  vendorBills   VendorBill[]
+  expenses      Expense[]
+
+  @@index([status])
+  @@index([managerId])
+}
+
+model ProjectManager {
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId String
+  manager   User    @relation(fields: [managerId], references: [id], onDelete: Cascade)
+  managerId String
+  assignedAt DateTime @default(now())
+
+  @@id([projectId, managerId])
+  @@index([managerId])
+}
+
+model ProjectMember {
+  id        String   @id @default(uuid())
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  role      String?
+  isActive  Boolean  @default(true)
+  addedAt   DateTime @default(now())
+
+  @@unique([projectId, userId])
+  @@index([userId])
+  @@index([projectId])
+}
+
+///////////////////////
+// Tasks
+///////////////////////
+model Task {
+  id           String      @id @default(uuid())
+  project      Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId    String
+  title        String
+  description  String?
+  assigneeId   String?
+  assignee     User?       @relation("Assignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  status       TaskStatus  @default(NEW)
+  priority     Priority    @default(MEDIUM)
+  deadline     DateTime?
+  estimateHours Decimal?   @db.Decimal(8,2)
+  loggedHours  Decimal?    @db.Decimal(8,2) @default(0.00)
+  orderIndex   Int?
+  coverUrl     String?
+  images       String[]    @default([])
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  comments     TaskComment[]
+  attachments  Attachment[]
+  timesheets   Timesheet[]
+
+  @@index([projectId])
+  @@index([assigneeId])
+  @@index([status, priority])
+}
+
+model TaskComment {
+  id        String   @id @default(uuid())
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  taskId    String
+  author    User?    @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  authorId  String?
+  content   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([taskId])
+  @@index([authorId])
+}
+
+model Attachment {
+  id         String   @id @default(uuid())
+  task       Task?    @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  taskId     String?
+  uploadedBy User?    @relation(fields: [uploadedById], references: [id], onDelete: SetNull)
+  uploadedById String?
+  url        String
+  filename   String?
+  mimeType   String?
+  size       Int?
+  createdAt  DateTime @default(now())
+
+  @@index([taskId])
+  @@index([uploadedById])
+}
+
+///////////////////////
+// Timesheets
+///////////////////////
+model Timesheet {
+  id         String   @id @default(uuid())
+  task       Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  taskId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId     String
+  date       DateTime
+  hours      Decimal  @db.Decimal(8,2)
+  isBillable Boolean  @default(true)
+  rate       Decimal? @db.Decimal(12,2)
+  amount     Decimal? @db.Decimal(12,2)
+  linkedInvoiceLineId String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([taskId])
+  @@index([userId])
+  @@index([date])
+}
+
+///////////////////////
+// Expenses
+///////////////////////
+model Expense {
+  id          String   @id @default(uuid())
+  project     Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  projectId   String?
+  createdBy   User?    @relation("CreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdById String?
+  partner     Partner? @relation(fields: [partnerId], references: [id], onDelete: SetNull)
+  partnerId   String?
+  description String?
+  amount      Decimal  @db.Decimal(12,2)
+  date        DateTime @default(now())
+  receiptUrl  String?
+  billable    Boolean  @default(false)
+  approved    Boolean  @default(false)
+  linkedInvoiceId String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([projectId])
+  @@index([createdById])
+  @@index([partnerId])
+}
+
+///////////////////////
+// Products
+///////////////////////
+model Product {
+  id          String   @id @default(uuid())
+  name        String
+  sku         String?  @unique
+  description String?
+  unit        String?
+  salesPrice  Decimal? @db.Decimal(12,2)
+  costPrice   Decimal? @db.Decimal(12,2)
+  taxPercent  Decimal? @db.Decimal(5,2)
+
+  salesLines     SalesOrderLine[]
+  purchaseLines  PurchaseOrderLine[]
+  invoiceLines   InvoiceLine[]
+  vendorBillLines VendorBillLine[]
+}
+
+///////////////////////
+// Sales / Purchase / Billing documents
+///////////////////////
+model SalesOrder {
+  id          String       @id @default(uuid())
+  number      String       @unique
+  partner     Partner?     @relation(fields: [partnerId], references: [id], onDelete: SetNull)
+  partnerId   String?
+  project     Project?     @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  projectId   String?
+  date        DateTime     @default(now())
+  validUntil  DateTime?
+  status      DocumentStatus @default(DRAFT)
+  currency    String       @default("INR")
+  paymentTerms String?
+  note        String?
+  subtotal    Decimal      @db.Decimal(12,2) @default(0.00)
+  taxTotal    Decimal      @db.Decimal(12,2) @default(0.00)
+  total       Decimal      @db.Decimal(12,2) @default(0.00)
+  
+  // Approval workflow fields
+  requestedBy   User?      @relation("SalesOrderRequester", fields: [requestedById], references: [id], onDelete: SetNull)
+  requestedById String?
+  approvedBy    User?      @relation("SalesOrderApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+  approvedById  String?
+  approvalNote  String?
+  requestedAt   DateTime?
+  approvedAt    DateTime?
+  
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  lines       SalesOrderLine[]
+  invoices    CustomerInvoice[] @relation("SO_Invoice")
+  linkedPurchaseOrders PurchaseOrder[] @relation("PO_SO_Link")
+
+  @@index([partnerId])
+  @@index([projectId])
+  @@index([status])
+  @@index([requestedById])
+  @@index([approvedById])
+}
+
+model SalesOrderLine {
+  id            String   @id @default(uuid())
+  salesOrder    SalesOrder @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  salesOrderId  String
+  product       Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+  productId     String?
+  description   String?
+  quantity      Decimal  @db.Decimal(12,2) @default(1.00)
+  unit          String?
+  unitPrice     Decimal  @db.Decimal(12,2)
+  taxPercent    Decimal? @db.Decimal(5,2)
+  amount        Decimal  @db.Decimal(12,2)
+
+  @@index([salesOrderId])
+}
+
+model CustomerInvoice {
+  id            String     @id @default(uuid())
+  number        String     @unique
+  partner       Partner?   @relation(fields: [partnerId], references: [id], onDelete: SetNull)
+  partnerId     String?
+  project       Project?   @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  projectId     String?
+  salesOrder    SalesOrder? @relation("SO_Invoice", fields: [salesOrderId], references: [id], onDelete: SetNull)
+  salesOrderId  String?
+  date          DateTime   @default(now())
+  dueDate       DateTime?
+  status        DocumentStatus @default(DRAFT)
+  currency      String     @default("INR")
+  subtotal      Decimal    @db.Decimal(12,2) @default(0.00)
+  taxTotal      Decimal    @db.Decimal(12,2) @default(0.00)
+  total         Decimal    @db.Decimal(12,2) @default(0.00)
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  lines         InvoiceLine[]
+  payments      Payment[]
+
+  @@index([partnerId])
+  @@index([projectId])
+  @@index([salesOrderId])
+  @@index([status])
+}
+
+model InvoiceLine {
+  id              String          @id @default(uuid())
+  invoice         CustomerInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  invoiceId       String
+  product         Product?        @relation(fields: [productId], references: [id], onDelete: SetNull)
+  productId       String?
+  description     String?
+  quantity        Decimal         @db.Decimal(12,2) @default(1.00)
+  unit            String?
+  unitPrice       Decimal         @db.Decimal(12,2)
+  taxPercent      Decimal?        @db.Decimal(5,2)
+  amount          Decimal         @db.Decimal(12,2)
+  timesheetIds    String?
+  expenseIds      String?
+
+  @@index([invoiceId])
+}
+
+model PurchaseOrder {
+  id          String      @id @default(uuid())
+  number      String      @unique
+  partner     Partner?    @relation(fields: [partnerId], references: [id], onDelete: SetNull)
+  partnerId   String?
+  project     Project?    @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  projectId   String?
+  date        DateTime    @default(now())
+  expectedDate DateTime?
+  status      DocumentStatus @default(DRAFT)
+  currency    String      @default("INR")
+  note        String?
+  subtotal    Decimal     @db.Decimal(12,2) @default(0.00)
+  taxTotal    Decimal     @db.Decimal(12,2) @default(0.00)
+  total       Decimal     @db.Decimal(12,2) @default(0.00)
+  
+  // Approval workflow fields
+  requestedById String?
+  requestedBy   User?      @relation("PORequestedBy", fields: [requestedById], references: [id], onDelete: SetNull)
+  approvedById  String?
+  approvedBy    User?      @relation("POApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
+  approvalNote  String?
+  requestedAt   DateTime?
+  approvedAt    DateTime?
+  
+  // Link to Sales Order for matching
+  linkedSalesOrderId String?
+  linkedSalesOrder   SalesOrder? @relation("PO_SO_Link", fields: [linkedSalesOrderId], references: [id], onDelete: SetNull)
+  
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  lines       PurchaseOrderLine[]
+  vendorBills VendorBill[] @relation("PO_VendorBill")
+  activities  PurchaseOrderActivity[]
+
+  @@index([partnerId])
+  @@index([projectId])
+  @@index([status])
+  @@index([requestedById])
+  @@index([approvedById])
+  @@index([linkedSalesOrderId])
+}
+
+model PurchaseOrderLine {
+  id            String   @id @default(uuid())
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  purchaseOrderId String
+  product       Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+  productId     String?
+  description   String?
+  quantity      Decimal  @db.Decimal(12,2) @default(1.00)
+  unit          String?
+  unitPrice     Decimal  @db.Decimal(12,2)
+  taxPercent    Decimal? @db.Decimal(5,2)
+  amount        Decimal  @db.Decimal(12,2)
+
+  @@index([purchaseOrderId])
+}
+
+// Purchase Order Activity Log for Sales tracking
+model PurchaseOrderActivity {
+  id              String   @id @default(uuid())
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  purchaseOrderId String
+  user            User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  userId          String?
+  action          String   // "CREATED", "APPROVED", "REJECTED", "TAGGED", "COMMENTED"
+  comment         String?
+  tags            String[] // Array of tags like ["URGENT", "REVIEWED", "FOLLOW_UP"]
+  metadata        Json?    // Additional data
+  createdAt       DateTime @default(now())
+
+  @@index([purchaseOrderId])
+  @@index([userId])
+  @@index([createdAt])
+}
+
+model VendorBill {
+  id             String    @id @default(uuid())
+  number         String    @unique
+  partner        Partner?  @relation(fields: [partnerId], references: [id], onDelete: SetNull)
+  partnerId      String?
+  project        Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  projectId      String?
+  purchaseOrder  PurchaseOrder? @relation("PO_VendorBill", fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+  purchaseOrderId String?
+  date           DateTime  @default(now())
+  dueDate        DateTime?
+  status         DocumentStatus @default(DRAFT)
+  currency       String    @default("INR")
+  subtotal       Decimal   @db.Decimal(12,2) @default(0.00)
+  taxTotal       Decimal   @db.Decimal(12,2) @default(0.00)
+  total          Decimal   @db.Decimal(12,2) @default(0.00)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  lines          VendorBillLine[]
+  payments       Payment[]
+
+  @@index([partnerId])
+  @@index([projectId])
+  @@index([purchaseOrderId])
+  @@index([status])
+}
+
+model VendorBillLine {
+  id           String     @id @default(uuid())
+  vendorBill   VendorBill @relation(fields: [vendorBillId], references: [id], onDelete: Cascade)
+  vendorBillId String
+  product      Product?   @relation(fields: [productId], references: [id], onDelete: SetNull)
+  productId    String?
+  description  String?
+  quantity     Decimal    @db.Decimal(12,2) @default(1.00)
+  unit         String?
+  unitPrice    Decimal    @db.Decimal(12,2)
+  taxPercent   Decimal?   @db.Decimal(5,2)
+  amount       Decimal    @db.Decimal(12,2)
+
+  @@index([vendorBillId])
+}
+
+///////////////////////
+// Payments
+///////////////////////
+model Payment {
+  id            String    @id @default(uuid())
+  partner       Partner?  @relation(fields: [partnerId], references: [id], onDelete: SetNull)
+  partnerId     String?
+  invoice       CustomerInvoice? @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  invoiceId     String?
+  vendorBill    VendorBill? @relation(fields: [vendorBillId], references: [id], onDelete: Cascade)
+  vendorBillId  String?
+  amount        Decimal   @db.Decimal(12,2)
+  currency      String    @default("INR")
+  date          DateTime  @default(now())
+  method        String?
+  reference     String?
+  createdAt     DateTime  @default(now())
+
+  @@index([partnerId])
+  @@index([invoiceId])
+  @@index([vendorBillId])
+}
+
+///////////////////////
+// NextAuth Models
+///////////////////////
+model Account {
+  id                String  @id @default(uuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(uuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}

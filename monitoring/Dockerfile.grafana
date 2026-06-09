@@ -1,0 +1,13 @@
+FROM grafana/grafana:latest
+
+# Install Google Cloud Monitoring plugin
+RUN grafana-cli plugins install grafana-googlecloud-monitoring-datasource
+
+# Copy provisioning configs
+COPY provisioning /etc/grafana/provisioning
+
+# Expose Grafana port
+EXPOSE 3000
+
+# Run Grafana
+CMD ["grafana-server", "--homepath=/usr/share/grafana", "--config=/etc/grafana/grafana.ini"]

@@ -1,0 +1,181 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: xenon-notch-477511-g5
+  SERVICE_NAME: oneflow
+  REGION: us-central1
+  REGISTRY: us-central1-docker.pkg.dev
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Generate Prisma Client
+        run: npx prisma generate
+
+      - name: Run linter
+        run: npm run lint
+        continue-on-error: true
+
+      - name: Run tests
+        run: npm test
+
+  build:
+    name: Build Docker Image
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tags }}
+      image_digest: ${{ steps.build.outputs.digest }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGISTRY }}
+
+      - name: Extract metadata for Docker
+        id: meta
+        run: |
+          IMAGE_TAG="${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/oneflow/${{ env.SERVICE_NAME }}:${{ github.sha }}"
+          echo "tags=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+          echo "Image tag: ${IMAGE_TAG}"
+
+      - name: Build and push Docker image
+        id: build
+        run: |
+          IMAGE_TAG="${{ steps.meta.outputs.tags }}"
+          
+          # Build the Docker image
+          docker build \
+            --tag "${IMAGE_TAG}" \
+            --tag "${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/oneflow/${{ env.SERVICE_NAME }}:latest" \
+            --build-arg BUILDKIT_INLINE_CACHE=1 \
+            .
+          
+          # Push the images
+          docker push "${IMAGE_TAG}"
+          docker push "${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/oneflow/${{ env.SERVICE_NAME }}:latest"
+          
+          echo "digest=$(docker inspect --format='{{index .RepoDigests 0}}' ${IMAGE_TAG})" >> $GITHUB_OUTPUT
+
+      - name: Image built successfully
+        run: |
+          echo "✅ Docker image built and pushed successfully!"
+          echo "Image: ${{ steps.meta.outputs.tags }}"
+
+  deploy:
+    name: Deploy to Cloud Run
+    needs: build
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy to Cloud Run
+        run: |
+          IMAGE_TAG="${{ needs.build.outputs.image_tag }}"
+          
+          gcloud run deploy ${{ env.SERVICE_NAME }} \
+            --image="${IMAGE_TAG}" \
+            --platform=managed \
+            --region=${{ env.REGION }} \
+            --allow-unauthenticated \
+            --port=8080 \
+            --memory=512Mi \
+            --cpu=1 \
+            --min-instances=0 \
+            --max-instances=10 \
+            --set-env-vars="NODE_ENV=production,GCP_PROJECT_ID=${{ env.PROJECT_ID }},GCP_BUCKET_NAME=oneflow-storage,NEXTAUTH_URL=${{ secrets.NEXTAUTH_URL }},REDIS_HOST=${{ secrets.REDIS_HOST }},REDIS_PORT=${{ secrets.REDIS_PORT }}" \
+            --set-secrets="DATABASE_URL=DATABASE_URL:latest,NEXTAUTH_SECRET=NEXTAUTH_SECRET:latest,GCP_SERVICE_ACCOUNT_KEY=GCP_STORAGE_KEY:latest,GOOGLE_CLIENT_ID=GOOGLE_CLIENT_ID:latest,GOOGLE_CLIENT_SECRET=GOOGLE_CLIENT_SECRET:latest" \
+            --timeout=300 \
+            --concurrency=80 \
+            --cpu-boost \
+            --no-cpu-throttling \
+            --execution-environment=gen2
+
+      - name: Get Cloud Run service URL
+        id: get-url
+        run: |
+          SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
+            --platform=managed \
+            --region=${{ env.REGION }} \
+            --format='value(status.url)')
+          echo "url=${SERVICE_URL}" >> $GITHUB_OUTPUT
+          echo "🚀 Service deployed at: ${SERVICE_URL}"
+
+      - name: Verify deployment
+        run: |
+          SERVICE_URL="${{ steps.get-url.outputs.url }}"
+          echo "Waiting for service to be ready..."
+          sleep 10
+          
+          # Test health endpoint
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${SERVICE_URL}/api/health" || echo "000")
+          
+          if [ "$HTTP_STATUS" -eq 200 ]; then
+            echo "✅ Deployment successful! Service is healthy."
+            echo "Health check passed with status: ${HTTP_STATUS}"
+          else
+            echo "⚠️ Deployment completed but health check returned: ${HTTP_STATUS}"
+            echo "Service may still be starting up. Check logs with:"
+            echo "gcloud run services logs read ${{ env.SERVICE_NAME }} --region=${{ env.REGION }}"
+          fi
+
+      - name: Deployment summary
+        run: |
+          echo "## 🎉 Deployment Complete!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Service:** ${{ env.SERVICE_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Region:** ${{ env.REGION }}" >> $GITHUB_STEP_SUMMARY
+          echo "**URL:** ${{ steps.get-url.outputs.url }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** ${{ needs.build.outputs.image_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Quick Links" >> $GITHUB_STEP_SUMMARY
+          echo "- [Service Dashboard](https://console.cloud.google.com/run/detail/${{ env.REGION }}/${{ env.SERVICE_NAME }}/metrics?project=${{ env.PROJECT_ID }})" >> $GITHUB_STEP_SUMMARY
+          echo "- [Service Logs](https://console.cloud.google.com/run/detail/${{ env.REGION }}/${{ env.SERVICE_NAME }}/logs?project=${{ env.PROJECT_ID }})" >> $GITHUB_STEP_SUMMARY
