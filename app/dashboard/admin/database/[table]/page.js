@@ -27,6 +27,8 @@ export default function DatabaseTablePage() {
   const [tableData, setTableData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
+  const [showFilters, setShowFilters] = useState(false);
+  const [hiddenColumns, setHiddenColumns] = useState([]);
 
   const tableName = params.table;
 
@@ -152,9 +154,9 @@ export default function DatabaseTablePage() {
       return JSON.stringify(record).toLowerCase().includes(searchLower);
     });
 
-    // Get column names from first record
+    // Get column names from first record, filtered by hiddenColumns
     const columns = Object.keys(tableData.data[0]).filter(key => 
-      !key.startsWith('_') && typeof tableData.data[0][key] !== 'object'
+      !key.startsWith('_') && typeof tableData.data[0][key] !== 'object' && !hiddenColumns.includes(key)
     );
 
     return (
@@ -331,13 +333,58 @@ export default function DatabaseTablePage() {
                 className="w-full pl-10 pr-4 py-2 border border-border rounded-lg bg-background"
               />
             </div>
-            <Button variant="outline">
+            <Button
+              variant={showFilters ? "default" : "outline"}
+              onClick={() => setShowFilters((v) => !v)}
+            >
               <Filter className="mr-2 h-4 w-4" />
-              Filters
+              {showFilters ? "Hide Filters" : "Filters"}
             </Button>
           </div>
         </CardContent>
       </Card>
+
+      {/* Column Visibility Filter Panel */}
+      {showFilters && tableData?.data?.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm">Column Visibility</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex flex-wrap gap-2">
+              {Object.keys(tableData.data[0])
+                .filter((key) => !key.startsWith('_') && typeof tableData.data[0][key] !== 'object')
+                .map((col) => (
+                  <button
+                    key={col}
+                    onClick={() =>
+                      setHiddenColumns((prev) =>
+                        prev.includes(col)
+                          ? prev.filter((c) => c !== col)
+                          : [...prev, col]
+                      )
+                    }
+                    className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
+                      hiddenColumns.includes(col)
+                        ? 'bg-muted text-muted-foreground border-border line-through'
+                        : 'bg-primary/10 text-primary border-primary/30 hover:bg-primary/20'
+                    }`}
+                  >
+                    {col.replace(/([A-Z])/g, ' $1').trim()}
+                  </button>
+                ))}
+            </div>
+            {hiddenColumns.length > 0 && (
+              <button
+                onClick={() => setHiddenColumns([])}
+                className="mt-3 text-xs text-muted-foreground hover:text-foreground underline"
+              >
+                Show all columns
+              </button>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Table Data */}
       <Card>
