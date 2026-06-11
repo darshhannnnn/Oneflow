@@ -53,7 +53,8 @@ export default function UserNav() {
   };
 
   const handleSignOut = async () => {
-    await signOut({ callbackUrl: "/login" });
+    await signOut({ redirect: false });
+    window.location.href = "/login";
   };
 
   return (

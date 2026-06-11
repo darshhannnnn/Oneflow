@@ -46,7 +46,8 @@ export default function PendingApprovalPage() {
   }, [status, session, router]);
 
   const handleLogout = async () => {
-    await signOut({ callbackUrl: "/login" });
+    await signOut({ redirect: false });
+    window.location.href = "/login";
   };
 
   if (status === "loading") {
@@ -84,9 +85,9 @@ export default function PendingApprovalPage() {
             <div className="flex items-start gap-3 p-4 bg-muted rounded-lg">
               <Mail className="h-5 w-5 text-blue-600 mt-0.5 flex-shrink-0" />
               <div className="space-y-1">
-                <p className="text-sm font-medium">You'll be notified</p>
+                <p className="text-sm font-medium">You&apos;ll be notified</p>
                 <p className="text-sm text-muted-foreground">
-                  Once approved, you'll receive an email at <strong>{session?.user?.email}</strong> and can log in to access the platform.
+                  Once approved, you&apos;ll receive an email at <strong>{session?.user?.email}</strong> and can log in to access the platform.
                 </p>
               </div>
             </div>

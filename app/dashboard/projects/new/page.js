@@ -477,7 +477,11 @@ export default function NewProjectPage() {
                       <input
                         type="checkbox"
                         checked={selectedMembers.includes(user.id)}
-                        onChange={() => handleMemberToggle(user.id)}
+                        onChange={(e) => {
+                          e.stopPropagation();
+                          handleMemberToggle(user.id);
+                        }}
+                        onClick={(e) => e.stopPropagation()}
                         className="h-4 w-4"
                       />
                       <div className="flex-1">
